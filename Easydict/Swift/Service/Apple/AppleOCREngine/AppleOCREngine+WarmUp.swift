@@ -92,19 +92,31 @@ extension AppleOCREngine {
     }
 
     /// Warms up the legacy `VNRecognizeTextRequest` pipeline.
+    ///
+    /// The synchronous `perform` runs on a dispatch queue, like the real legacy path, instead of
+    /// blocking a Swift concurrency thread. When SwiftNIO is installed as the global executor,
+    /// blocking its event loop thread deadlocks `TextRecognition`, and every later OCR request
+    /// queues behind the stuck warm-up.
     private static func performLegacyWarmUpOCR(on cgImage: CGImage) async {
-        let request = VNRecognizeTextRequest()
-        request.recognitionLevel = .accurate
-        request.recognitionLanguages = AppleLanguageMapper.shared.ocrRecognitionLanguageStrings(
-            for: .auto
-        )
-        request.usesLanguageCorrection = true
-        request.automaticallyDetectsLanguage = automaticLanguageDetectionEnabled(isModernOCR: false)
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                let request = VNRecognizeTextRequest()
+                request.recognitionLevel = .accurate
+                request.recognitionLanguages = AppleLanguageMapper.shared
+                    .ocrRecognitionLanguageStrings(for: .auto)
+                request.usesLanguageCorrection = true
+                request.automaticallyDetectsLanguage = automaticLanguageDetectionEnabled(
+                    isModernOCR: false
+                )
 
-        do {
-            try VNImageRequestHandler(cgImage: cgImage).perform([request])
-        } catch {
-            logError("Vision OCR warm-up failed: \(error.localizedDescription)")
+                do {
+                    try VNImageRequestHandler(cgImage: cgImage).perform([request])
+                } catch {
+                    logError("Vision OCR warm-up failed: \(error.localizedDescription)")
+                }
+
+                continuation.resume()
+            }
         }
     }
 
